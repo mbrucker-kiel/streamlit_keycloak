@@ -4,13 +4,27 @@ st.title("📔 Datenauswertungen Rettungsdienst Schleswig-Flensburg")
 
 st.write("\n")
 
-if st.button(
-    "✨ RDSLFL Keycloak Login ✨",
-    type="primary",
-    key="checkout-button",
-    use_container_width=True,
-):
-    st.login("keycloak")
+# Check if user is already logged in
+if not st.session_state.get("logged_in", False):
+    st.title("🚑 RDSLFL Dashboard")
+    st.write("Bitte melden Sie sich mit Ihrem Keycloak-Account an.")
+    
+    if st.button(
+        "✨ RDSLFL Keycloak Login ✨",
+        type="primary",
+        use_container_width=True,
+    ):
+        st.login("keycloak")
+else:
+    # User is logged in - show dashboard
+    st.title("🚑 RDSLFL Dashboard")
+    st.success(f"Willkommen, {st.session_state.get('user_info', {}).get('name', 'Benutzer')}!")
+    
+    # Your dashboard content here
+    st.write("Dashboard content...")
+    
+    if st.button("Logout"):
+        st.logout()
 
 with st.expander("📝 Impressum & Datenschutz"):
     st.markdown("""
