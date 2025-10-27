@@ -1,21 +1,15 @@
 import streamlit as st
 
-st.title("📔 Streamlit + Auth0 Production test")
-
-st.markdown(
-    "Hello DataFan, help me benchmark [Auth0](https://auth0.com/) for a future video by connecting with Google or creating an Email/Password account with verification 😁"
-)
-
+st.title("📔 Datenauswertungen Rettungsdienst Schleswig-Flensburg")
 
 st.write("\n")
 
 if st.button(
-    "✨ Sign up to the DataFan Store",
+    "✨ RDSLFL Keycloak Login ✨",
     type="primary",
     key="checkout-button",
     use_container_width=True,
 ):
-    # st.login("google")
     st.login("keycloak")
 
 with st.expander("📝 Impressum & Datenschutz"):
@@ -32,6 +26,3 @@ Telefon: 04621 5308 000
 Bei technischen Rückfragen an martin.brucker(a)rettungsdienst-sl-fl.de wenden.
 Datenschutzerklärung: https://www.rettungsdienst-sl-fl.de/datenschutz/
 """)
-    
-
-st.html("./styles.html")

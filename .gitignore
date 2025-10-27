@@ -21,3 +21,4 @@ build/
 # Editor / OS files
 .vscode/
 .DS_Store
+docker-compose.yml

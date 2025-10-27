@@ -1,9 +1,0 @@
-services:
-  # Web Service (Streamlit App)
-  web:
-    build: .
-    ports:
-      - "8088:8088"
-    environment:
-      - STREAMLIT_SERVER_PORT=8088
-      - STREAMLIT_SERVER_ADDRESS=192.168.100.217
