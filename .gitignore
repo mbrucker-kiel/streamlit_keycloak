@@ -1,0 +1,23 @@
+# Python / virtualenv
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secret config files
+# change "secrets.toml" to the actual filename(s) you want excluded
+secrets.toml
+*.toml
+.streamlit/secrets.toml
+
+# Environment
+.env
+
+# Byte-compiled / cache
+*.egg-info/
+dist/
+build/
+
+# Editor / OS files
+.vscode/
+.DS_Store
