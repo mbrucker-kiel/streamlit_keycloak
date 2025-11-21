@@ -50,6 +50,5 @@ LOADERS = {
     "EVM": get_evm,
     "Feiertage": get_holidays,
     "RTM_Vorhaltung": get_rtm_vorhaltung,
-    "TransportStatusHistory": get_transport_status_history,
 }
 
