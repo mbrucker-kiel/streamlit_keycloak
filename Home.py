@@ -14,7 +14,7 @@ if not st.user.is_logged_in:
         type="primary",
         use_container_width=True,
     ):
-        st.login("keycloak")
+        st.login()
 else:
     # User is logged in - show dashboard
     st.title("🚑 RDSLFL Dashboard")

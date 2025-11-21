@@ -27,7 +27,7 @@ if not st.user.is_logged_in:
         type="primary",
         use_container_width=True,
     ):
-        st.login("keycloak")
+        st.login()
     
     st.stop()  # Stop execution of the rest of the page
 # ============================================
