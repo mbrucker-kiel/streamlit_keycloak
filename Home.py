@@ -1,23 +1,21 @@
 import streamlit as st
 
-st.title("📔 Datenauswertungen Rettungsdienst Schleswig-Flensburg")
+st.title("🚑 RDSLFL Dashboard")
 
 st.write("\n")
 
 # Check if user is already logged in
 if not st.user.is_logged_in:
-    st.title("🚑 RDSLFL Dashboard")
     st.write("Bitte melden Sie sich mit Ihrem Keycloak-Account an.")
     
     if st.button(
-        "✨ RDSLFL Keycloak Login ✨",
+        "✨ RDSLFL Login ✨",
         type="primary",
         use_container_width=True,
     ):
         st.login()
 else:
     # User is logged in - show dashboard
-    st.title("🚑 RDSLFL Dashboard")
     st.success(
         f"Willkommen, {st.user.name} ({st.user.email})!"
     )

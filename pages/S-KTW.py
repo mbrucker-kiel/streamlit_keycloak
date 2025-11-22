@@ -372,16 +372,81 @@ if 'content_callSign' in details_df.columns and date_col:
     # Combine all data
     all_daily_counts = pd.concat([daily_83_counts, daily_selected_counts, daily_85_counts], ignore_index=True)
     
+    # Ensure Datum is datetime
+    all_daily_counts['Datum'] = pd.to_datetime(all_daily_counts['Datum'])
+    
     if not all_daily_counts.empty:
         # Find the maximum value across all datasets for consistent Y-axis scaling
         max_y_value = all_daily_counts['Anzahl'].max()
         
-        fig_comparison = px.line(all_daily_counts, x='Datum', y='Anzahl', color='Typ',
-                               title='Einsatzaufkommen über Zeit - Fahrzeugtyp Vergleich')
+        # Create figure with go.Figure for more control
+        fig_comparison = go.Figure()
         
+        # Define colors for each type
+        colors = {
+            'Fahrzeuge mit **-83-**': '#1f77b4',  # Blue
+            'S-KTW Fahrzeuge': '#ff7f0e',         # Orange
+            'Fahrzeuge mit **-85-** ausgenommen S-KTW': '#2ca02c' # Green
+        }
+        
+        # Process each group
+        for name, group_df in all_daily_counts.groupby('Typ'):
+            group_df = group_df.sort_values('Datum')
+            
+            # Calculate 30-day trend
+            if not group_df.empty:
+                min_date = group_df['Datum'].min()
+                max_date = group_df['Datum'].max()
+                full_range = pd.date_range(start=min_date, end=max_date, freq='D')
+                
+                # Reindex to include all days, filling missing days with 0
+                trend_df = group_df.set_index('Datum').reindex(full_range)
+                trend_df['Anzahl'] = trend_df['Anzahl'].fillna(0)
+                
+                # Calculate rolling mean
+                trend_df['Trend'] = trend_df['Anzahl'].rolling(window=30, center=True, min_periods=1).mean()
+                
+                color = colors.get(name, '#000000')
+                
+                # Add raw data trace
+                fig_comparison.add_trace(go.Scatter(
+                    x=group_df['Datum'],
+                    y=group_df['Anzahl'],
+                    mode='lines',
+                    name=name,
+                    line=dict(color=color, width=3),
+                    showlegend=True
+                ))
+                
+                # Add trend line trace
+                fig_comparison.add_trace(go.Scatter(
+                    x=trend_df.index,
+                    y=trend_df['Trend'],
+                    mode='lines',
+                    name=f"{name} (30-Tage Trend)",
+                    line=dict(color=color, width=1),
+                    opacity=0.5,
+                    showlegend=True
+                ))
+
         # Set consistent Y-axis range for all lines
         fig_comparison.update_layout(
-            yaxis=dict(range=[0, max_y_value * 1.05])  # Add 5% padding at top
+            title='Einsatzaufkommen über Zeit - Fahrzeugtyp Vergleich (mit 30-Tage Trend)',
+            yaxis=dict(range=[0, max_y_value * 1.05]),
+            xaxis_title="Datum",
+            yaxis_title="Anzahl Einsätze",
+            hovermode='x unified',
+            hoverlabel=dict(
+                namelength=-1,  # Show full name without truncation
+                align='left'    # Align text to left
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
         )
         
         st.plotly_chart(fig_comparison, use_container_width=True)
@@ -511,19 +576,40 @@ st.markdown("---")
 
 st.markdown("""
 Die folgende Heatmap visualisiert die Verteilung der S-KTW-Einsätze über 
-Wochentage und Tageszeiten. Diese Analyse unterstützt die optimale 
-Personalplanung und Ressourcenallokation.
+Wochentage und Tageszeiten. 
+
+**Hinweis:** Einsätze des Typs "Sonstige Fahrten (Dienstfahrt, 
+Werkstattfahrt, etc.)" sind in dieser Darstellung ausgeschlossen.
 """)
 
 # Use selected_df for the hourly analysis
 if not selected_df.empty:
     heatmap_df = selected_df.copy()
+    
+    # Filter out specific mission types
+    if 'content_missionType' in heatmap_df.columns:
+        # Use contains for more robust matching
+        excluded_pattern = "Sonstige Fahrten"
+        
+        excluded_mask = heatmap_df['content_missionType'].str.contains(
+            excluded_pattern, case=False, na=False
+        )
+        excluded_count = excluded_mask.sum()
+
+        if excluded_count == 0:
+            with st.expander("Debug: Verfügbare Einsatztypen"):
+                st.write(heatmap_df['content_missionType'].unique())
+
+        heatmap_df = heatmap_df[~excluded_mask]
 
     # Check if StatusAlarm column exists, otherwise try to create it from Status1
     if "StatusAlarm" in heatmap_df.columns:
         alarm_col = "StatusAlarm"
-        heatmap_df[alarm_col] = pd.to_datetime(heatmap_df[alarm_col], errors='coerce')
-    elif 'content_dateStatus1' in heatmap_df.columns and 'content_timeStatus1' in heatmap_df.columns:
+        heatmap_df[alarm_col] = pd.to_datetime(
+            heatmap_df[alarm_col], errors='coerce'
+        )
+    elif ('content_dateStatus1' in heatmap_df.columns and
+          'content_timeStatus1' in heatmap_df.columns):
         # Create StatusAlarm from date and time columns
         alarm_col = "StatusAlarm"
         heatmap_df[alarm_col] = pd.to_datetime(
@@ -894,6 +980,226 @@ if not selected_df.empty:
             peak_month = monthly_stats.idxmax() if len(monthly_stats) > 0 else "N/A"
             peak_month_missions = monthly_stats.max() if len(monthly_stats) > 0 else 0
 
+
+## 🔗 CEDUS_CODE → LeadingDiagnosis Sankey (S-KTW Fahrzeuge)
+st.markdown(
+    """
+    ### 🔗 Zusammenhang zwischen CEDUS_CODE und Leading Diagnosis
+
+    Die folgende Sankey-Darstellung zeigt die in der Leitstelle erhobenen DPI 
+    (**CEDUS_CODE**) zu welchen führenden Arbeitsdiagnosen (**leadingDiagnosis**) im
+    NIDA-Einsatzprotokoll führen – gefiltert auf die ausgewählten S-KTW Fahrzeuge.
+    
+    Im folgenden ist es möglich die dargestellte Anzahl der Flüsse auszuwählen.
+    """
+)
+
+# Anzahl Top-Flüsse wählbar (erweitert bis 500)
+top_n_flows = st.slider(
+    "Anzahl der Top-Flüsse", min_value=5, max_value=500, value=20, step=5
+)
+
+# Datensätze für Sankey nur ETÜ + Index
+with st.spinner("Lade ETÜ & Index für Sankey..."):
+    df_etu = None
+    df_index = None
+    load_errors = []
+
+    try:
+        df_etu = data_loading("ETÜ", limit=50000)
+    except Exception as e:
+        load_errors.append(f"ETÜ Daten konnten nicht geladen werden: {e}")
+
+    try:
+        df_index = data_loading("Index", limit=50000)
+    except Exception as e:
+        load_errors.append(f"Index Daten konnten nicht geladen werden: {e}")
+
+    sankey_df = pd.DataFrame()
+    if not load_errors and df_etu is not None and df_index is not None:
+        if df_etu.empty or df_index.empty:
+            load_errors.append("ETÜ oder Index leer – keine Verknüpfung möglich.")
+        else:
+            mission_col_index = 'missionNumber' if 'missionNumber' in df_index.columns else None
+            # Mögliche Einsatznummer-Kandidaten in ETÜ
+            etu_cols_lower = {c.lower(): c for c in df_etu.columns}
+            candidates = ['einsatz_nr', 'einsatznr', 'missionnumber', 'einsatznummer']
+            mission_col_etu = None
+            for cand in candidates:
+                if cand in etu_cols_lower:
+                    mission_col_etu = etu_cols_lower[cand]
+                    break
+            if not mission_col_etu:
+                for c in df_etu.columns:
+                    cl = c.lower()
+                    if 'einsatz' in cl and ('nr' in cl or 'number' in cl):
+                        mission_col_etu = c
+                        break
+
+            if mission_col_index and mission_col_etu:
+                # Find EINSATZMITTEL column (vehicle ID in ETÜ)
+                einsatzmittel_col = None
+                for c in df_etu.columns:
+                    if c.lower() in ['einsatzmittel', 'einsatz_mittel']:
+                        einsatzmittel_col = c
+                        break
+                if not einsatzmittel_col:
+                    for c in df_etu.columns:
+                        if 'einsatz' in c.lower() and 'mittel' in c.lower():
+                            einsatzmittel_col = c
+                            break
+
+                merged_df = df_etu.merge(
+                    df_index[['missionNumber', 'leadingDiagnosis']],
+                    left_on=mission_col_etu,
+                    right_on='missionNumber',
+                    how='left'
+                )
+
+                # Extract vehicle from EINSATZMITTEL e.g. "Ret SL 20-83-01"
+                if einsatzmittel_col:
+                    merged_df['extracted_vehicle_id'] = (
+                        merged_df[einsatzmittel_col].astype(str).apply(
+                            lambda x: x.split()[-1] if ' ' in str(x)
+                            else str(x)
+                        )
+                    )
+                    merged_df = merged_df[
+                        merged_df['extracted_vehicle_id'].isin(
+                            selected_vehicles
+                        )
+                    ]
+
+                sankey_df = merged_df.copy()
+            else:
+                load_errors.append(
+                    "Konnte keine passenden Einsatznummer-Spalten für Merge finden (ETÜ vs Index)."
+                )
+
+    if load_errors:
+        st.warning("\n".join(load_errors))
+
+if not sankey_df.empty:
+    # CEDUS_CODE Spalte ermitteln (robust)
+    cedus_col = None
+    for c in sankey_df.columns:
+        if c.upper() == 'CEDUS_CODE' or 'cedus' in c.lower():
+            cedus_col = c
+            break
+    if not cedus_col:
+        st.info(
+            "Keine CEDUS_CODE Spalte gefunden – Sankey nicht darstellbar."
+        )
+    elif 'leadingDiagnosis' not in sankey_df.columns:
+        st.info(
+            "Spalte 'leadingDiagnosis' fehlt – Sankey nicht darstellbar."
+        )
+    else:
+        flow_df = sankey_df[[cedus_col, 'leadingDiagnosis']].copy()
+        # Bereinigen / fehlende Werte entfernen
+        flow_df = flow_df.dropna(subset=[cedus_col, 'leadingDiagnosis'])
+        flow_df[cedus_col] = flow_df[cedus_col].astype(str).str.strip()
+        flow_df['leadingDiagnosis'] = (
+            flow_df['leadingDiagnosis'].astype(str).str.strip()
+        )
+
+        # Aggregation
+        counts = (
+            flow_df.groupby([cedus_col, 'leadingDiagnosis'])
+            .size()
+            .reset_index(name='value')
+        )
+        counts = counts.sort_values('value', ascending=False).head(top_n_flows)
+
+        if counts.empty:
+            st.info("Keine ausreichenden Daten für Flussanalyse.")
+        else:
+            # Knotenlisten erstellen
+            sources_unique = list(counts[cedus_col].unique())
+            targets_unique = list(counts['leadingDiagnosis'].unique())
+            all_nodes = sources_unique + targets_unique
+            node_index = {n: i for i, n in enumerate(all_nodes)}
+
+            # Sankey Quell-/Ziel-Indices
+            source_indices = [node_index[s] for s in counts[cedus_col]]
+            target_indices = [
+                node_index[t] for t in counts['leadingDiagnosis']
+            ]
+            values = counts['value'].tolist()
+
+            # Improved color palette (light pastels for readability)
+            palette = px.colors.qualitative.Set3
+            if not palette:
+                palette = [
+                    '#A6CEE3', '#B2DF8A', '#FB9A99', '#FDBF6F',
+                    '#CAB2D6', '#FFFF99'
+                ]
+            node_colors = []
+            for i, _ in enumerate(sources_unique):
+                node_colors.append(palette[i % len(palette)])
+            offset = len(sources_unique)
+            for j, _ in enumerate(targets_unique):
+                node_colors.append(palette[(offset + j) % len(palette)])
+
+            # Display full labels (no truncation)
+            sankey_fig = go.Figure(data=[go.Sankey(
+                arrangement='snap',
+                node=dict(
+                    pad=20,
+                    thickness=16,
+                    line=dict(color='#444', width=0.7),
+                    label=all_nodes,
+                    color=node_colors,
+                    hovertemplate='%{label}<extra></extra>'
+                ),
+                link=dict(
+                    source=source_indices,
+                    target=target_indices,
+                    value=values,
+                    color='rgba(120,120,120,0.3)',
+                    hovertemplate=(
+                        '%{source.label} → %{target.label}<br>'
+                        'Anzahl: %{value}<extra></extra>'
+                    )
+                )
+            )])
+
+            sankey_fig.update_layout(
+                title=(
+                    f"Top {len(values)} Flüsse CEDUS_CODE → "
+                    "LeadingDiagnosis (S-KTW)"
+                ),
+                font=dict(
+                    size=13, color='#222',
+                    family='Arial, sans-serif'
+                ),
+                hoverlabel=dict(font_size=12),
+                margin=dict(l=10, r=10, t=50, b=10),
+                paper_bgcolor='white',
+                plot_bgcolor='white'
+            )
+            # Add text outline/shadow to node labels for readability
+            sankey_fig.update_traces(
+                selector=dict(type='sankey'),
+                textfont=dict(
+                    size=13,
+                    color='#222'
+                ),
+                node=dict(
+                    line=dict(
+                        color='#666',
+                        width=1.5
+                    ),
+                    pad=22
+                )
+            )
+            st.plotly_chart(sankey_fig, use_container_width=True)
+else:
+    st.info(
+        "Keine geeigneten verknüpften Datensätze für Sankey verfügbar oder Laden fehlgeschlagen."
+    )
+
+
 st.markdown(f"""
 ### **Jahresbilanz der S-KTW-Flotte**
 
@@ -916,12 +1222,4 @@ qualitativ hochwertige Patientenversorgung.
 
 *Dieser Bericht basiert auf Einsatzdaten der S-KTW-Flotte für das Jahr 2025.  
 Letzte Aktualisierung: {pd.Timestamp.now().strftime('%d.%m.%Y')}*
-""")
-
-# Add final success message
-st.success("""
-🏆 **Die S-KTW-Flotte gewährleistet als Rückgrat der Notfallversorgung eine 
-zuverlässige, schnelle und qualitativ hochwertige Patientenbetreuung im gesamten 
-Versorgungsgebiet. Die systematische Datenauswertung unterstützt kontinuierliche 
-Verbesserungen und Effizienzsteigerungen.**
 """)

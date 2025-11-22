@@ -10,8 +10,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from api_client import (
     cached_get_transports,
-    cached_get_transport_status_history,
-    test_api_connection
+    cached_get_transport_status_history
 )
 
 # ========== KEYCLOAK LOGIN CHECK ==========
@@ -39,62 +38,62 @@ except locale.Error:
     # Fallback if German locale is not available
     pass
 
-# Load data from API instead of CSV
+# Load data from API
+# Clear cache button for debugging
+if st.button("🔄 Aktualisiere Daten vom API"):
+    st.cache_data.clear()
 
-
-@st.cache_data(ttl=300, show_spinner="Loading transport data from API...")
+@st.cache_data(ttl=60, show_spinner="Loading transport data from API...")
 def load_transport_data():
-    """Load transport data with fallback to CSV if API fails"""
-    try:
-        # Test API connection first
-        if test_api_connection():
-            transport_df = cached_get_transports()
-            transportstatushistory_df = cached_get_transport_status_history()
-            
-            latest_date = transport_df["created_at"].max()
-            if isinstance(latest_date, str):
-                latest_date = pd.to_datetime(latest_date)
-            latest_transport = latest_date.strftime("%d.%m.%Y %H:%M")
-            st.success(f"✅ Verbunden mit KTW.sh API, neuste Transportanmeldung {latest_transport}")
-            # Convert datetime columns from API
-            if not transport_df.empty:
-                # Convert datetime columns
-                datetime_columns = [
-                    'created_at', 'pickup_datetime', 'destination_datetime',
-                    'agreed_transport_datetime'
-                ]
-                for col in datetime_columns:
-                    if col in transport_df.columns:
-                        transport_df[col] = pd.to_datetime(
-                            transport_df[col], errors='coerce'
-                        )
-            
-            if not transportstatushistory_df.empty:
-                # Convert datetime columns for status history
-                if 'changed_at' in transportstatushistory_df.columns:
-                    transportstatushistory_df['changed_at'] = pd.to_datetime(
-                        transportstatushistory_df['changed_at'],
-                        errors='coerce'
-                    )
-                
-                # Map API field names to expected column names for compatibility
-                if 'changed_by_username' in transportstatushistory_df.columns:
-                    transportstatushistory_df['changed_by_id'] = (
-                        transportstatushistory_df['changed_by_username']
-                    )
-            
-            return transport_df, transportstatushistory_df
-        else:
-            st.warning("⚠️ API connection failed, falling back to CSV files")
-            raise Exception("API connection failed")
-    except Exception as e:
-        st.error(f"API Error: {e}. Using CSV fallback.")
-        # Fallback to CSV files
-        transportstatushistory_df = pd.read_csv(
-            "data/mockup_transportstatushistory.csv"
+    """Load transport data from API"""
+    # Get data from API
+    transport_df = cached_get_transports()
+    transportstatushistory_df = cached_get_transport_status_history()
+    
+    if transport_df.empty or transportstatushistory_df.empty:
+        st.error("❌ Keine Daten von der KTW.sh API verfügbar.")
+        st.stop()
+    
+    # Check if created_at exists and get latest date
+    if 'created_at' in transport_df.columns:
+        latest_date = transport_df["created_at"].max()
+        if isinstance(latest_date, str):
+            latest_date = pd.to_datetime(latest_date)
+        latest_transport = latest_date.strftime("%d.%m.%Y %H:%M")
+        st.success(
+            f"✅ Verbunden mit KTW.sh API, neuste Transportanmeldung "
+            f"{latest_transport}"
         )
-        transport_df = pd.read_csv("data/mockup_transport.csv")
-        return transport_df, transportstatushistory_df
+    else:
+        st.success("✅ Verbunden mit KTW.sh API")
+    
+    # Convert datetime columns from API - only those that exist
+    if not transport_df.empty:
+        datetime_columns = [
+            'created_at', 'pickup_datetime', 'destination_datetime',
+            'agreed_transport_datetime'
+        ]
+        for col in datetime_columns:
+            if col in transport_df.columns:
+                transport_df[col] = pd.to_datetime(
+                    transport_df[col], errors='coerce'
+                )
+    
+    if not transportstatushistory_df.empty:
+        # Convert datetime columns for status history
+        if 'changed_at' in transportstatushistory_df.columns:
+            transportstatushistory_df['changed_at'] = pd.to_datetime(
+                transportstatushistory_df['changed_at'],
+                errors='coerce'
+            )
+        
+        # Map API field names for compatibility
+        if 'changed_by_username' in transportstatushistory_df.columns:
+            transportstatushistory_df['changed_by_id'] = (
+                transportstatushistory_df['changed_by_username']
+            )
+    
+    return transport_df, transportstatushistory_df
 
 
 # Load the data
@@ -108,12 +107,56 @@ if not transport_df.empty and 'created_at' in transport_df.columns:
             transport_df["created_at"], errors='coerce'
         )
     
+    # Use agreed_transport_datetime as fallback if created_at is null
+    if 'agreed_transport_datetime' in transport_df.columns:
+        null_created_at = transport_df['created_at'].isna()
+        if null_created_at.any():
+            # Convert agreed_transport_datetime to datetime if needed
+            # Use utc=True to handle mixed timezones
+            if not pd.api.types.is_datetime64_any_dtype(
+                transport_df["agreed_transport_datetime"]
+            ):
+                transport_df["agreed_transport_datetime"] = pd.to_datetime(
+                    transport_df["agreed_transport_datetime"], 
+                    errors='coerce',
+                    utc=True
+                )
+            
+            # If it was already datetime but with timezone, ensure it is UTC
+            elif transport_df["agreed_transport_datetime"].dt.tz is not None:
+                transport_df["agreed_transport_datetime"] = transport_df[
+                    "agreed_transport_datetime"
+                ].dt.tz_convert('UTC')
+            
+            # Fill null created_at with agreed_transport_datetime
+            # We need to make sure created_at is also UTC or compatible
+            if transport_df["created_at"].dt.tz is None:
+                # If created_at is naive, we might need to make agreed naive too
+                # or make created_at aware. Let's make agreed naive (UTC)
+                transport_df.loc[
+                    null_created_at, 'created_at'
+                ] = transport_df.loc[
+                    null_created_at, 'agreed_transport_datetime'
+                ].dt.tz_localize(None)
+            else:
+                # Both aware, should be fine
+                transport_df.loc[
+                    null_created_at, 'created_at'
+                ] = transport_df.loc[
+                    null_created_at, 'agreed_transport_datetime'
+                ]
+    
     # Remove timezone information to avoid comparison issues
-    if (transport_df["created_at"].dt.tz is not None and 
-        not transport_df["created_at"].isna().all()):
+    if transport_df["created_at"].dt.tz is not None:
+        # Only localize if it has timezone info
         transport_df["created_at"] = transport_df[
             "created_at"
         ].dt.tz_localize(None)
+    
+    # Show data quality info
+    null_count = transport_df["created_at"].isna().sum()
+    if null_count > 0:
+        st.warning(f"⚠️ {null_count} Transporte haben kein gültiges Zeitstempel!")
 
 
 
@@ -218,14 +261,30 @@ Steigerung der Nutzung nach der Einführungsphase.
 """)
 
 # Daily transport counts
-daily_counts = transport_df.groupby(
-    transport_df["created_at"].dt.date
-).size().reset_index()
+# Filter out transports without created_at
+transport_with_valid_dates = transport_df[
+    transport_df['created_at'].notna()
+].copy()
+
+if transport_with_valid_dates.empty:
+    st.error("❌ Keine Transporte mit gültigem created_at Datum!")
+    st.stop()
+
+# Ensure created_at is timezone-naive for proper date comparisons
+transport_dates = transport_with_valid_dates["created_at"].copy()
+if transport_dates.dt.tz is not None:
+    transport_dates = transport_dates.dt.tz_localize(None)
+
+# Group by date and count transports
+daily_counts = pd.DataFrame({
+    'Datum': transport_dates.dt.date,
+    'count': 1
+}).groupby('Datum').sum().reset_index()
 daily_counts.columns = ["Datum", "Anzahl Transporte"]
 daily_counts["Datum"] = pd.to_datetime(daily_counts["Datum"])
 
 # Create a complete date range from actual data min to today
-start_date = transport_df["created_at"].min().normalize()
+start_date = transport_dates.min().normalize()
 end_date = pd.to_datetime('today').normalize()
 full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
 
@@ -292,10 +351,10 @@ st.markdown("---")
 
 ## 🕐 **Zeitpunkt-Analyse der Transportanmeldungen**
 
-st.markdown("""
-Die Heatmap zeigt, zu welchen Tageszeiten und an welchen Wochentagen 
-die meisten Transportanmeldungen erfolgen. 
-""")
+st.subheader(
+    "Die Heatmap zeigt, zu welchen Tageszeiten und an welchen Wochentagen "
+    "die meisten Transportanmeldungen erfolgen."
+)
 
 # Create German weekday mapping
 weekday_german = {
@@ -308,10 +367,29 @@ weekday_german = {
     "Sunday": "Sonntag"
 }
 
-transport_df["weekday"] = transport_df["created_at"].dt.day_name().map(
+# Use agreed_transport_datetime for heatmap
+heatmap_source_col = "agreed_transport_datetime"
+if heatmap_source_col not in transport_df.columns:
+    heatmap_source_col = "created_at"
+
+# Ensure it is datetime
+if not pd.api.types.is_datetime64_any_dtype(transport_df[heatmap_source_col]):
+    transport_df[heatmap_source_col] = pd.to_datetime(
+        transport_df[heatmap_source_col], errors='coerce', utc=True
+    )
+
+# Localize if needed
+if transport_df[heatmap_source_col].dt.tz is not None:
+    transport_df["heatmap_dt"] = transport_df[
+        heatmap_source_col
+    ].dt.tz_localize(None)
+else:
+    transport_df["heatmap_dt"] = transport_df[heatmap_source_col]
+
+transport_df["weekday"] = transport_df["heatmap_dt"].dt.day_name().map(
     weekday_german
 )
-transport_df["hour"] = transport_df["created_at"].dt.hour
+transport_df["hour"] = transport_df["heatmap_dt"].dt.hour
 
 # Create heatmap data
 heatmap_data_2d = (
@@ -387,23 +465,6 @@ if not heatmap_data_2d.empty:
         **Anzahl Anmeldungen:** {busiest_count:.0f}
         """)
 
-st.markdown("---")
-
-## 📊 **Analyse der Krankentransport-Kategorien nach Wochentagen**
-
-st.markdown("""
-### Projektentwicklung und Anmeldemodus
-
-**Pilotphase (Juli - November 2025):**
-- Bis zum **05.11.2025**: Ausschließlich Voranmeldungen für den Folgetag
-- Akute Transporte am gleichen Tag wurden weiterhin telefonisch angemeldet
-
-**Aktuelle Phase (seit 05.11.2025):**
-- **Vollständige digitale Integration**: Sowohl Voranmeldungen als auch 
-  akute Transporte werden über KTW.sh abgewickelt
-- Reduzierung der telefonischen Kommunikation
-""")
-
 # Load holidays (simplified - empty dataframe for demonstration)
 holidays_df = pd.DataFrame()
 
@@ -414,8 +475,29 @@ if not holidays_df.empty:
 
 # Create weekday groups and handle holidays
 transport_df_analysis = transport_df.copy()
-transport_df_analysis['weekday_name'] = transport_df_analysis['created_at'].dt.day_name()
-transport_df_analysis['date'] = transport_df_analysis['created_at'].dt.date
+
+# Use agreed_transport_datetime for analysis as requested
+target_col = 'agreed_transport_datetime'
+if target_col not in transport_df_analysis.columns:
+    target_col = 'created_at'
+
+# Normalize to timezone-naive datetime for analysis
+if not pd.api.types.is_datetime64_any_dtype(transport_df_analysis[target_col]):
+    transport_df_analysis[target_col] = pd.to_datetime(
+        transport_df_analysis[target_col], errors='coerce', utc=True
+    )
+
+if transport_df_analysis[target_col].dt.tz is not None:
+    transport_df_analysis['analysis_dt'] = transport_df_analysis[
+        target_col
+    ].dt.tz_localize(None)
+else:
+    transport_df_analysis['analysis_dt'] = transport_df_analysis[target_col]
+
+transport_df_analysis['weekday_name'] = transport_df_analysis[
+    'analysis_dt'
+].dt.day_name()
+transport_df_analysis['date'] = transport_df_analysis['analysis_dt'].dt.date
 
 # Function to categorize weekdays including holidays
 def categorize_weekday(row):
@@ -449,6 +531,17 @@ category_weekday_analysis = category_weekday_analysis[weekday_order]
 
 st.write("### Krankenbeforderungsfahrt-Kategorien nach Wochentag-Gruppen")
 
+st.markdown("""
+**Erklärung der Verteilung:**
+Diese Heatmap visualisiert, wie sich die verschiedenen Transportkategorien auf 
+die Wochentage verteilen. Die Analyse basiert auf dem 
+**vereinbarten Transportzeitpunkt** (`agreed_transport_datetime`).
+
+Dunklere Farben zeigen eine höhere Anzahl an Transporten in der jeweiligen 
+Kombination an. Dies hilft Muster zu erkennen, z.B. ob bestimmte 
+Transportarten (wie Entlassungen) an bestimmten Tagen gehäuft auftreten.
+""")
+
 # Display as heatmap
 fig_category_heatmap = px.imshow(
     category_weekday_analysis.values,
@@ -469,7 +562,7 @@ for category in transport_df_analysis['krankenbeforderungsfahrt_kategorie'].uniq
             st.write("**Transporte nach Wochentag-Gruppe:**")
             category_data = transport_df_analysis[
                 transport_df_analysis['krankenbeforderungsfahrt_kategorie'] == category
-            ]
+            ].copy()
             weekday_stats = category_data['weekday_group'].value_counts().reindex(
                 weekday_order, fill_value=0
             )
@@ -525,7 +618,7 @@ for category in transport_df_analysis['krankenbeforderungsfahrt_kategorie'].uniq
         
         with col2:
             st.write("**Transporte nach Stunde (für diese Kategorie):**")
-            category_data['hour'] = category_data['created_at'].dt.hour
+            category_data['hour'] = category_data['analysis_dt'].dt.hour
             
             hourly_transports = category_data.groupby('hour').size().reset_index(name='count')
             hourly_transports.columns = ['Stunde', 'Anzahl Transporte']
@@ -537,108 +630,6 @@ for category in transport_df_analysis['krankenbeforderungsfahrt_kategorie'].uniq
             ).fillna(0)
             
             st.bar_chart(hourly_transports.set_index('Stunde'))
-
-st.markdown("---")
-
-## 🏥 **Analyse der Abholstationen**
-
-st.markdown("""
-### Aktuelle Teilnehmer und Expansionspläne
-
-**Derzeitiger Status:**
-- **Hauptnutzer:** Entlassmanagement der Helios Klinik Schleswig
-- Konzentration auf stationäre Entlassungen und Verlegungen
-
-**Geplante Erweiterungen:**
-- **Kurzfristig:** Integration der Zentralen Notaufnahme (ZNA) 
-  der Helios Klinik Schleswig  
-- **Mittelfristig:** Gespräche mit der Diakonie Flensburg für 
-  standortübergreifende Implementierung
-- **Ziel:** Flächendeckende digitale Transportanmeldung in der Region
-""")
-
-# Create combined pickup location identifier
-transport_df["combined_pickup"] = (
-    transport_df["pickup_station"].astype(str) + 
-    " (Institut: " + transport_df["pickup_institute_name"].astype(str) + ")"
-)
-
-pickup_counts = transport_df["combined_pickup"].value_counts().reset_index()
-pickup_counts.columns = ["Abholstation", "Anzahl Transporte"]
-
-# Calculate percentages
-pickup_counts["Anteil (%)"] = (
-    pickup_counts["Anzahl Transporte"] / pickup_counts["Anzahl Transporte"].sum() * 100
-).round(1)
-
-# Create enhanced pie chart
-fig3 = px.pie(
-    pickup_counts,
-    names="Abholstation",
-    values="Anzahl Transporte",
-    title="Verteilung der Transportanmeldungen nach Abholstationen",
-    color_discrete_sequence=px.colors.qualitative.Set3
-)
-
-fig3.update_traces(
-    textposition='inside',
-    textinfo='percent+label',
-    hovertemplate='<b>%{label}</b><br>' +
-                  'Anzahl: %{value}<br>' +
-                  'Anteil: %{percent}<br>' +
-                  '<extra></extra>'
-)
-
-st.plotly_chart(fig3, use_container_width=True, 
-                key="pickup_station_pie_chart")
-
-# Display detailed statistics table  
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.markdown("### 📋 Detaillierte Stationsstatistik")
-    st.dataframe(
-        pickup_counts.style.format({
-            "Anzahl Transporte": "{:,}",
-            "Anteil (%)": "{:.1f}%"
-        }),
-        use_container_width=True
-    )
-
-with col2:
-    st.markdown("### 🎯 Nutzungsverteilung")
-    total_stations = len(pickup_counts)
-    top_station = pickup_counts.iloc[0]
-    
-    st.metric("Anzahl aktiver Stationen", total_stations)
-    st.metric(
-        "Führende Station", 
-        f"{top_station['Anteil (%)']:.1f}%",
-        help=f"{top_station['Abholstation']}"
-    )
-
-# Detailed breakdown in expander
-with st.expander("🔍 Detaillierte Aufschlüsselung nach Station und Institut"):
-    detailed_pickup = transport_df.groupby(
-        ["pickup_station", "pickup_institute_name"]
-    ).size().reset_index(name="Anzahl")
-    detailed_pickup.columns = ["Station", "Institut ID", "Anzahl Transporte"]
-    
-    # Calculate percentages for detailed view
-    detailed_pickup["Anteil (%)"] = (
-        detailed_pickup["Anzahl Transporte"] / 
-        detailed_pickup["Anzahl Transporte"].sum() * 100
-    ).round(1)
-    
-    st.dataframe(
-        detailed_pickup.style.format({
-            "Anzahl Transporte": "{:,}",
-            "Anteil (%)": "{:.1f}%"
-        }),
-        use_container_width=True
-    )
-
-
 
 st.markdown("---")
 
